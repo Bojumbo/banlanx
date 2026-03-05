@@ -132,31 +132,34 @@ class SPTechModel(SPTechFX):
     configs: dict[int, SPTechConf] | None = None
     encoder_key: int = 0
 
-    def __encoder(self, cmd: int, data: bytearray = None) -> bytearray:
+    def __encoder(self, device: Any, cmd: int, data: bytearray = None) -> bytearray:
         """Encode BanlanX Message."""
+        # Якщо дані не передані, створюємо порожній bytearray
         if data is None:
             data = bytearray()
             
         data_size: int = len(data) & 0xFFFF
         
-        # Викликаємо header без аргументів
-        message = self.__header_magic() 
+        # Передаємо device у header_magic, оскільки він очікується там
+        message = self.__header_magic(device) 
         
         message.append(cmd & 0xFF)
         message.append(self.encoder_key & 0xFF)
         
-        # Перевіряємо транспорт безпечно
+        # Визначаємо тип транспорту (Network або Bluetooth) через об'єкт device
         is_net = False
-        if hasattr(self, "transport"):
-            # UNILED_TRANSPORT_NET зазвичай має значення 1 або подібне
-            if self.transport == 1: 
+        if hasattr(device, "transport"):
+            # 1 зазвичай відповідає UNILED_TRANSPORT_NET
+            if device.transport == 1: 
                 is_net = True
         
         if is_net:
+            # Логіка для мережевого підключення (Wi-Fi)
             message.append(0x00)
             message.append(0x00)
             message.extend(data_size.to_bytes(2, byteorder="big"))
         else:
+            # Логіка для Bluetooth
             message.append(0x01)
             message.append(0x00)
             message.append(data_size & 0xFF)
