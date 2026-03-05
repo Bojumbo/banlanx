@@ -134,32 +134,26 @@ class SPTechModel(SPTechFX):
 
     def __encoder(self, device: Any, cmd: int, data: bytearray = None) -> bytearray:
         """Encode BanlanX Message."""
-        # Якщо дані не передані, створюємо порожній bytearray
         if data is None:
             data = bytearray()
             
         data_size: int = len(data) & 0xFFFF
-        
-        # Передаємо device у header_magic, оскільки він очікується там
         message = self.__header_magic(device) 
         
         message.append(cmd & 0xFF)
         message.append(self.encoder_key & 0xFF)
         
-        # Визначаємо тип транспорту (Network або Bluetooth) через об'єкт device
+        # Перевіряємо транспорт через об'єкт device безпечно
         is_net = False
         if hasattr(device, "transport"):
-            # 1 зазвичай відповідає UNILED_TRANSPORT_NET
-            if device.transport == 1: 
+            if device.transport == UNILED_TRANSPORT_NET:
                 is_net = True
         
         if is_net:
-            # Логіка для мережевого підключення (Wi-Fi)
             message.append(0x00)
             message.append(0x00)
             message.extend(data_size.to_bytes(2, byteorder="big"))
         else:
-            # Логіка для Bluetooth
             message.append(0x01)
             message.append(0x00)
             message.append(data_size & 0xFF)
@@ -182,7 +176,7 @@ class SPTechModel(SPTechFX):
         magic_data = self.__header_magic(device)
         magic_size = len(magic_data)
         if not header.startswith(magic_data):
-            None
+            return None
         return header[magic_size:]
 
     def __header_extract_command(
@@ -213,7 +207,6 @@ class SPTechModel(SPTechFX):
         return payload_size
 
     ## Decode Response Payload
-    ##
     def decode_response_payload(
         self,
         device: UniledDevice,
@@ -225,7 +218,6 @@ class SPTechModel(SPTechFX):
         device.master.status.replace({})
         device.master.features = []
 
-        # Packet Format, 0x00 = 1 Byte Length Fields, 0x01 = 2 Byte Length Fields
         length_fields = data.pop(0)
         while len(data):
             chunk_type = data.pop(0)
@@ -264,13 +256,10 @@ class SPTechModel(SPTechFX):
                     data[:chunk_size].hex(),
                     chunk_size,
                 )
-            # Next chunk
             data = data[chunk_size:]
 
         return True
 
-    ## Message Chunk 1 - Settings - Device Firmware Version, Light Type & Power On/Off Settings
-    ##
     def decode_chunk_1(
         self,
         device: UniledDevice,
@@ -314,8 +303,6 @@ class SPTechModel(SPTechFX):
             device.master.status.set(ATTR_UL_COEXISTENCE, bool(data[15]))
         return None
 
-    ## Message Chunk 2 - Device Mode, Status & Settings
-    ##
     def decode_chunk_2(
         self,
         device: UniledDevice,
@@ -346,7 +333,7 @@ class SPTechModel(SPTechFX):
         data = data[24:]
 
         if not (cfg := device.master.context) or not isinstance(cfg, SPTechConf):
-            return True
+            return data
 
         if cfg.order and len(cfg.order) > 1:
             device.master.features.append(ChipOrderFeature())
@@ -370,7 +357,6 @@ class SPTechModel(SPTechFX):
 
         if (fxlist := cfg.dictof_mode_effects(mode)) is not None:
             if fxattr := None if effect not in fxlist else fxlist[effect]:
-                # _LOGGER.warn("%s: FXATTR: (%s) %s", device.name, cfg.name, fxattr)
                 device.master.features.extend(
                     [
                         LightStripFeature(extra=UNILED_CONTROL_ATTRIBUTES),
@@ -421,11 +407,6 @@ class SPTechModel(SPTechFX):
                 )
 
                 if self.is_sound_mode(mode):
-                    # In sound modes, irrespective of coexistence setting
-                    # the color and white(s) are separatly controlled when
-                    # supported by the effect, but brightness changes are
-                    # not supported.
-                    #
                     if self.is_white_mode(mode) and fxattr.colorable and cfg.cct:
                         device.master.set(ATTR_HA_BRIGHTNESS, 255)
                         device.master.set(ATTR_HA_WHITE, 255)
@@ -437,11 +418,6 @@ class SPTechModel(SPTechFX):
                         device.master.set(ATTR_HA_BRIGHTNESS, 255)
                         device.master.set(ATTR_HA_RGB_COLOR, effect_color)
                 elif self.is_dynamic_mode(mode):
-                    # In dynamic modes, irrespective of coexistence setting
-                    # the color and white(s) are separatly controlled when
-                    # supported by the effect, brightness changes are also
-                    # supported.
-                    #
                     if self.is_white_mode(mode) and fxattr.colorable and cfg.cct:
                         device.master.set(
                             ATTR_UL_CCT_COLOR,
@@ -455,18 +431,15 @@ class SPTechModel(SPTechFX):
                     )
                 elif self.is_static_mode(mode):
                     coexistence = device.master.get(ATTR_UL_COEXISTENCE, False)
-
                     if cfg.hue and cfg.cct and coexistence:
                         device.master.set(
                             ATTR_HA_RGBWW_COLOR,
                             static_color + static_white,
-                            # (data[37], data[38], data[39], data[40], data[41]),
                         )
                     elif cfg.hue and cfg.white and coexistence:
                         device.master.set(
                             ATTR_HA_RGBW_COLOR,
-                            static_color + (level_white),
-                            # (data[37], data[38], data[39], level_white),
+                            static_color + (level_white,),
                         )
                     elif cfg.hue or cfg.cct or cfg.white:
                         white_mode = COLOR_MODE_BRIGHTNESS
@@ -479,7 +452,6 @@ class SPTechModel(SPTechFX):
                             device.master.set(
                                 ATTR_UL_CCT_COLOR,
                                 static_white + (level_white, None),
-                                # (data[40], data[41], white_level, None),
                             )
                             white_mode = COLOR_MODE_COLOR_TEMP
                             supported_color_modes.add(white_mode)
@@ -488,8 +460,6 @@ class SPTechModel(SPTechFX):
                             white_mode = COLOR_MODE_WHITE
                             supported_color_modes.add(white_mode)
                         else:
-                            # Fix Issues #73 and #77
-                            # supported_color_modes = set(white_mode)
                             supported_color_modes.add(white_mode)
 
                         device.master.set(
@@ -510,7 +480,6 @@ class SPTechModel(SPTechFX):
         else:
             _LOGGER.debug("%s: Unknown light mode: %d", device.name, mode)
 
-        ## DIY Solid Configuration Slots
         diy_solid_mode = data.pop(0)
         diy_solid_slot_count = data.pop(0)
         for slot in range(diy_solid_slot_count):
@@ -521,8 +490,6 @@ class SPTechModel(SPTechFX):
 
         return data
 
-    ## Message Chunk 3 - Extended Device Status & Settings
-    ##
     def decode_chunk_3(
         self,
         device: UniledDevice,
@@ -538,7 +505,6 @@ class SPTechModel(SPTechFX):
         )
         data = self.decode_chunk_2(device, chunk, data)
 
-        ## DIY Gradient Configuration Slots
         diy_gradient_mode = data.pop(0)
         diy_gradient_slot_count = data.pop(0)
         for slot in range(diy_gradient_slot_count):
@@ -549,8 +515,6 @@ class SPTechModel(SPTechFX):
 
         return data
 
-    ## Message Chunk 4 - Timer
-    ##
     def decode_chunk_4(
         self,
         device: UniledDevice,
@@ -558,23 +522,7 @@ class SPTechModel(SPTechFX):
         data: bytearray,
     ) -> bytearray | None:
         """Decode Chunk Type #4."""
-        # _LOGGER.debug("%s: Decode Chunk #%d: %s (%d)", device.name, chunk, data.hex(), len(data))
         timers: dict[int, dict[str, Any]] = device.master.get(ATTR_UL_TIMERS, {})
-
-        # 01 01 01 6a 01 12 38 - On  @ 07:30 PM - Sun, Tue, Thu, Sat & Enabled
-        # 02 01 00 15 00 65 f4 - Off @ 07:15 AM - Mon, Wed, Fri & Enabled
-        # 02 01 00 15 00 69 78 - Off @ 07:30 AM - Mon, Wed, Fri & Enabled
-        #
-        # For each timer set, there are 7 bytes
-        #
-        # 01 - Timer ID Number
-        # 02 - State, 0=Disabled, 1=Enabled
-        # 03 - Action, 0=Turn Off, 1=Turn On
-        # 04 - Days, Bits: |?|S|S|M|T|W|T|F|
-        # 05 - ? 0=AM, 1=PM
-        # 06 - ?
-        # 07 - ?
-        #
         tid = data[0]
         time = int.from_bytes(data[5:], byteorder="big")
         timers.update(
@@ -591,8 +539,6 @@ class SPTechModel(SPTechFX):
         device.master.set(ATTR_UL_TIMERS, timers)
         return None
 
-    ## Message Chunk 5 - Effect Layout
-    ##
     def decode_chunk_5(
         self,
         device: UniledDevice,
@@ -616,7 +562,6 @@ class SPTechModel(SPTechFX):
             segment_count = data.pop(0)
             sound_strip_modes[strip_mode] = {}
             for segment in range(segment_count):
-                # Note: Total Segment Pixels <= 1200
                 sound_strip_modes[strip_mode][segment] = {
                     ATTR_UL_SEGMENT: data[0],
                     ATTR_UL_SEGMENT_PIXELS: int.from_bytes(data[1:3], byteorder="big"),
@@ -627,24 +572,13 @@ class SPTechModel(SPTechFX):
                 }
                 data = data[9:]
 
-        # if sound_strip_modes:
-        #    device.master.set(ATTR_UL_STRIP_MODES, sound_strip_modes)
-
         sound_matrix_modes = {}
         matrix_mode_count = data.pop(0)
         for matrix_mode in range(matrix_mode_count):
             data = data[28:]
 
-        # if sound_matrix_modes:
-        #    device.master.set(ATTR_UL_MATRIX_MODES, sound_matrix_modes)
-
         return data
 
-    ## Message Chunk 6 - Network Information
-    ##
-    ## 3765386462653432376166363166303364366663653463633165306530363065
-    ## 7 A 8 d b A 4 2 7 a f 6 1 f 0 3 d 6 f c e 4 c c 1 e 0 e 0 6 0 e
-    ##
     def decode_chunk_6(
         self,
         device: UniledDevice,
@@ -663,11 +597,9 @@ class SPTechModel(SPTechFX):
                     device.master.set(ATTR_UL_WIFI_SSID, string)
                 elif string_idx == 1:
                     device.master.set(ATTR_UL_IP_ADDRESS, string)
-        data = data[2:]  # ??
+        data = data[2:]
         return data
 
-    ## Message Chunk 7 - Fun Switch (experimental)
-    ##
     def decode_chunk_7(
         self,
         device: UniledDevice,
@@ -678,8 +610,6 @@ class SPTechModel(SPTechFX):
         device.master.set(ATTR_UL_POWER_FUN_SWITCH, data.pop(0))
         return data
 
-    ## Message Chunk 10 - Unknown
-    ##
     def decode_chunk_10(
         self,
         device: UniledDevice,
@@ -687,15 +617,8 @@ class SPTechModel(SPTechFX):
         data: bytearray,
     ) -> bytearray | None:
         """Decode Chunk Type #10"""
-        # 00 01 02 03 04 05 06 07 08 09 10 11 12 13 14 15 16
-        # --------------------------------------------------
-        # 01 00 19 56 32 2e 30 2e 30 38 20 03 00 04 03 01 00
-        #          V  2  .  0  .  0  8  SP
         return data
 
-    ##
-    ## Command Handlers
-    ##
     def build_on_connect(self, device: UniledDevice) -> list[bytearray] | None:
         """Build on connect message(s)"""
         return None
@@ -782,6 +705,7 @@ class SPTechModel(SPTechFX):
             device, self.cmd.COEXISTENCE, bytearray([0x01 if state else 0x00])
         )
 
+    # ВАЖЛИВО: Додано device як аргумент та у виклик __encoder
     def build_on_power_command(
         self, device: UniledDevice, channel: UniledChannel, value: Any
     ) -> bytearray | None:
@@ -792,7 +716,7 @@ class SPTechModel(SPTechFX):
             )
         elif (mode := int(value)) not in self.DICTOF_ON_POWER_STATES:
             return None
-        return self.__encoder(self.cmd.ON_POWER, bytearray([mode]))
+        return self.__encoder(device, self.cmd.ON_POWER, bytearray([mode]))
 
     def fetch_on_power_list(
         self, device: UniledDevice, channel: UniledChannel
@@ -813,7 +737,6 @@ class SPTechModel(SPTechFX):
     ) -> bytearray | None:
         """The bytes to send for a change to white mode"""
         if self.is_white_mode(channel.status.light_mode_number):
-            _LOGGER.warning("Skip white mode change as already white")
             return None
         if self.is_sound_mode(channel.status.light_mode_number):
             mode = self.MODE_SOUND_WHITE
@@ -856,7 +779,7 @@ class SPTechModel(SPTechFX):
         device: UniledDevice,
         channel: UniledChannel,
         rgbw: tuple[int, int, int, int],
-    ) -> bytearray | None:
+    ) -> list[bytearray]:
         """The bytes to send for RGBW color level change"""
         red, green, blue, white = rgbw
         return [
@@ -1037,7 +960,7 @@ class SPTechModel(SPTechFX):
 
     def build_light_type_command(
         self, device: UniledDevice, channel: UniledChannel, value: str
-    ) -> list[bytearray]:
+    ) -> list[bytearray] | None:
         """Build light type message(s)"""
         if (
             light := self.int_if_str_in(str(value), self.fetch_light_type_dict())
@@ -1061,7 +984,7 @@ class SPTechModel(SPTechFX):
             mode = next(iter(cfg.effects))
 
         commands = []
-        if power := channel.status.onoff:
+        if channel.status.onoff:
             commands.append(self.build_onoff_command(device, channel, False))
         commands.append(
             self.__encoder(device, self.cmd.LIGHT_TYPE, bytearray([0x01, light & 0x7F]))
@@ -1090,7 +1013,7 @@ class SPTechModel(SPTechFX):
 
     def build_chip_order_command(
         self, device: UniledDevice, channel: UniledChannel, value: str | None = None
-    ) -> list[bytearray]:
+    ) -> bytearray | None:
         """Build chip order message(s)"""
         cfg: SPTechConf = channel.context
         if cfg is not None and cfg.order:
@@ -1107,9 +1030,6 @@ class SPTechModel(SPTechFX):
             return self.chip_order_list(cfg.order)
         return None
 
-    ##
-    ## Helpers
-    ##
     def match_light_type_config(self, light_type: int) -> SPTechConf | None:
         """Light type dictionary"""
         if self.configs is not None:
