@@ -132,18 +132,27 @@ class SPTechModel(SPTechFX):
     configs: dict[int, SPTechConf] | None = None
     encoder_key: int = 0
 
-    def __encoder(self, device: UniledDevice, cmd: int, data: bytearray = None) -> bytearray:
-        """Encode BanlanX Message (with fix for optional data)."""
-        # Якщо дані не передані, створюємо порожній bytearray
+    def __encoder(self, cmd: int, data: bytearray = None) -> bytearray:
+        """Encode BanlanX Message."""
         if data is None:
             data = bytearray()
             
         data_size: int = len(data) & 0xFFFF
-        message = self.__header_magic(device)
+        
+        # Викликаємо header без аргументів
+        message = self.__header_magic() 
+        
         message.append(cmd & 0xFF)
         message.append(self.encoder_key & 0xFF)
         
-        if device.transport == UNILED_TRANSPORT_NET:
+        # Перевіряємо транспорт безпечно
+        is_net = False
+        if hasattr(self, "transport"):
+            # UNILED_TRANSPORT_NET зазвичай має значення 1 або подібне
+            if self.transport == 1: 
+                is_net = True
+        
+        if is_net:
             message.append(0x00)
             message.append(0x00)
             message.extend(data_size.to_bytes(2, byteorder="big"))

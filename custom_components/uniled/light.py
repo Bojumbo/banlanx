@@ -71,9 +71,7 @@ from .lib.const import (
 _LOGGER = logging.getLogger(__name__)
 
 PARALLEL_UPDATES = 1
-
 UNILED_COMMAND_SETTLE_TIME: Final = 0.3
-
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -81,11 +79,8 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the UniLED number platform."""
-    # coordinator: UniledUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
     platform = entity_platform.async_get_current_platform()
 
-    ## @todo Build service more dynamically!
-    ##
     schema = {
         **LIGHT_TURN_ON_SCHEMA,
     }
@@ -107,7 +102,6 @@ async def async_setup_entry(
         hass, entry, async_add_entities, _add_light_entity, Platform.LIGHT
     )
 
-
 def _add_light_entity(
     coordinator: UniledUpdateCoordinator,
     channel: UniledChannel,
@@ -115,7 +109,6 @@ def _add_light_entity(
 ) -> UniledEntity | None:
     """Create UniLED number entity."""
     return None if not feature else UniledLightEntity(coordinator, channel, feature)
-
 
 class UniledLightEntity(
     UniledEntity, CoordinatorEntity[UniledUpdateCoordinator], LightEntity
@@ -144,10 +137,9 @@ class UniledLightEntity(
         """Return the color mode of the light."""
         if self.channel.has(ATTR_COLOR_MODE):
             return self.channel.get(ATTR_COLOR_MODE, ColorMode.ONOFF)
-        if not self._attr_color_mode:
-            supported = self.supported_color_modes()
-            if supported and len(supported) and not self._attr_color_mode:
-                return supported[0]
+        supported = self.supported_color_modes
+        if supported and len(supported) > 0 and not self._attr_color_mode:
+            return list(supported)[0]
         return self._attr_color_mode
 
     @property
@@ -155,7 +147,13 @@ class UniledLightEntity(
         """Supported color modes."""
         modes = self.__supported_color_modes
         if not isinstance(modes, set):
-            _LOGGER.warning("%s: Modes: %s is not a set!", self.device.name, modes)
+            return modes
+        
+        # FIX: Remove BRIGHTNESS if RGB is present to avoid HA validation error
+        if ColorMode.RGB in modes and len(modes) > 1:
+            new_modes = modes.copy()
+            new_modes.discard(ColorMode.BRIGHTNESS)
+            return new_modes
         return modes
 
     @property
@@ -166,37 +164,31 @@ class UniledLightEntity(
 
         if self.channel.has(ATTR_RGBWW_COLOR):
             self._attr_supported_color_modes = {ColorMode.RGBWW}
-            self._attr_color_mode = ColorMode.RGBWW
         elif self.channel.has(ATTR_RGBW_COLOR):
             self._attr_supported_color_modes = {ColorMode.RGBW}
-            self._attr_color_mode = ColorMode.RGBW
         elif self.channel.has(ATTR_RGB_COLOR):
             self._attr_supported_color_modes = {ColorMode.RGB}
-            self._attr_color_mode = ColorMode.RGB
         elif (
-            self.channel.has(ATTR_COLOR_TEMP)
+            self.channel.has("color_temp")
             or self.channel.has(ATTR_COLOR_TEMP_KELVIN)
             or self.channel.has(ATTR_UL_CCT_COLOR)
         ):
             self._attr_supported_color_modes = {ColorMode.COLOR_TEMP}
-            self._attr_color_mode = ColorMode.COLOR_TEMP
         elif self.channel.has(ATTR_BRIGHTNESS):
             self._attr_supported_color_modes = {ColorMode.BRIGHTNESS}
-            self._attr_color_mode = ColorMode.BRIGHTNESS
         else:
             self._attr_supported_color_modes = {ColorMode.ONOFF}
-            self._attr_color_mode = ColorMode.ONOFF
         return self._attr_supported_color_modes
 
     @property
     def supported_features(self) -> LightEntityFeature:
         """Flag supported features."""
-        self._attr_supported_features = 0
+        features = LightEntityFeature(0)
         if self.channel.has(ATTR_EFFECT):
-            self._attr_supported_features |= LightEntityFeature.EFFECT
+            features |= LightEntityFeature.EFFECT
         if self.channel.has(ATTR_TRANSITION):
-            self._attr_supported_features |= LightEntityFeature.TRANSITION
-        return self._attr_supported_features
+            features |= LightEntityFeature.TRANSITION
+        return features
 
     @property
     def is_on(self) -> bool:
@@ -231,8 +223,8 @@ class UniledLightEntity(
     @property
     def color_temp(self) -> int | None:
         """Return the mired value of this light."""
-        if self.channel.has(ATTR_COLOR_TEMP):
-            return self.channel.get(ATTR_COLOR_TEMP)
+        if self.channel.has("color_temp"):
+            return self.channel.get("color_temp")
         return color_temperature_kelvin_to_mired(self.color_temp_kelvin)
 
     @property
@@ -261,8 +253,8 @@ class UniledLightEntity(
                 )
             return kelvin
 
-        if self.channel.has(ATTR_COLOR_TEMP):
-            return color_temperature_mired_to_kelvin(self.channel.get(ATTR_COLOR_TEMP))
+        if self.channel.has("color_temp"):
+            return color_temperature_mired_to_kelvin(self.channel.get("color_temp"))
 
         return self._attr_color_temp_kelvin
 
@@ -314,14 +306,9 @@ class UniledLightEntity(
         """Control a light."""
         success = False
         async with self.coordinator.lock:
-            # Any transition time
-            #
             if gradual := kwargs.pop(ATTR_TRANSITION, 0):
                 gradual = gradual * 1000
 
-            # Process power state first, in case device needs on before
-            # processing any other commands.
-            #
             if self.feature.attr in kwargs:
                 power = kwargs.pop(self.feature.attr, not self.is_on)
                 if not power:
@@ -329,17 +316,12 @@ class UniledLightEntity(
                         self.channel, self.feature.attr, False
                     )
                     kwargs.clear()
-                    # return
                 if not self.is_on:
                     if power or (kwargs and self.channel.status.device_needs_on):
                         success = await self.device.async_set_state(
                             self.channel, self.feature.attr, True
                         )
 
-            # If we only have a brightness change to do and the command
-            # fails (likely due to unsupported mode), then don't force
-            # a device update, as nothing changed.
-            #
             if ATTR_BRIGHTNESS in kwargs and len(kwargs) == 1:
                 level = kwargs.pop(ATTR_BRIGHTNESS)
                 success = await self.device.async_set_state(
@@ -348,26 +330,17 @@ class UniledLightEntity(
                 if not success:
                     self.channel.refresh()
 
-            # Set the light mode before we set any effects as some devices use
-            # the same effect numbering for different effects etc.
-            #
             if (value := kwargs.pop(ATTR_UL_LIGHT_MODE, None)) is not None:
                 success = await self.device.async_set_state(
                     self.channel, ATTR_UL_LIGHT_MODE, value
                 )
 
-            # Set effect before we set any colors as some devices use
-            # different commands depending on what effect is in use.
-            #
             if (value := kwargs.pop(ATTR_EFFECT, None)) is not None:
                 success = await self.device.async_set_state(
                     self.channel, ATTR_EFFECT, value
                 )
 
-            # Process any color temperature changes here to do a kelvin
-            # to cold, warm and brightness conversion first etc.
-            #
-            mireds = kwargs.pop(ATTR_COLOR_TEMP, None)
+            mireds = kwargs.pop("color_temp", None)
             if (kelvin := kwargs.pop(ATTR_COLOR_TEMP_KELVIN, None)) is not None:
                 if self.channel.has(ATTR_COLOR_TEMP_KELVIN):
                     success = await self.device.async_set_state(
@@ -384,14 +357,12 @@ class UniledLightEntity(
                     success = await self.device.async_set_state(
                         self.channel, ATTR_UL_CCT_COLOR, (cold, warm, level, kelvin)
                     )
-                elif self.channel.has(ATTR_COLOR_TEMP):
+                elif self.channel.has("color_temp"):
                     if mireds is not None:
                         await self.device.async_set_state(
-                            self.channel, ATTR_COLOR_TEMP, mireds
+                            self.channel, "color_temp", mireds
                         )
 
-            # Process any other commands
-            #
             if len(kwargs):
                 if (
                     await self.device.async_set_multi_state(self.channel, **kwargs)
@@ -401,7 +372,6 @@ class UniledLightEntity(
 
             if success:
                 await self.update_during_transition(gradual)
-            # self.coordinator.async_set_updated_data(None)
 
         if (
             self.channel.status.get(ATTR_UL_DEVICE_FORCE_REFRESH, False)
@@ -414,20 +384,11 @@ class UniledLightEntity(
     async def update_during_transition(self, when: int) -> None:
         """Update state at the start and end of a transition."""
         self._cancel_postponed_update()
-
-        # Transition has started
         self.async_write_ha_state()
-
-        # Transition has ended
         if when > 0:
-            _LOGGER.debug("Schedule refresh: %s", when)
             await self.coordinator.async_request_refresh()
-
             async def _async_refresh(now: datetime) -> None:
-                """Refresh the state."""
-                _LOGGER.debug("%s: Firing postponed update", self.channel.name)
                 await self.coordinator.async_refresh()
-
             self.postponed_update = async_call_later(
                 self.hass,
                 timedelta(milliseconds=when),
